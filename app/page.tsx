@@ -204,23 +204,41 @@ export default function Page() {
   }
 
   async function handleContactSubmit(event: FormEvent) {
-    event.preventDefault();
-    setContactPending(true);
-    if (hasSupabase && supabase) {
-      await supabase.from('enquiries').insert({
-        type: 'contact',
-        first_name: contactForm.first_name,
-        last_name: contactForm.last_name,
-        phone: contactForm.phone,
-        enquiry_type: contactForm.enquiry_type,
-        message: contactForm.message
-      });
+  event.preventDefault();
+  setContactPending(true);
+
+  if (hasSupabase && supabase) {
+    const { data, error } = await supabase.from('enquiries').insert({
+      type: 'contact',
+      first_name: contactForm.first_name,
+      last_name: contactForm.last_name,
+      phone: contactForm.phone,
+      enquiry_type: contactForm.enquiry_type,
+      message: contactForm.message
+    });
+
+    console.log('DATA:', data);
+    console.log('ERROR:', error);
+
+    if (error) {
+      alert("❌ Failed to send enquiry");
+      setContactPending(false);
+      return;
     }
-    setContactPending(false);
-    setIsContactOpen(false);
-    setContactForm({ first_name: '', last_name: '', phone: '', enquiry_type: ENQUIRY_OPTIONS[0], message: '' });
-    window.alert("Message sent! Our team will be in touch within 24 hours.");
   }
+
+  setContactPending(false);
+  setIsContactOpen(false);
+  setContactForm({
+    first_name: '',
+    last_name: '',
+    phone: '',
+    enquiry_type: ENQUIRY_OPTIONS[0],
+    message: ''
+  });
+
+  window.alert("✅ Message sent! Our team will be in touch within 24 hours.");
+}
 
   async function handleBikeEnquiry(event: FormEvent) {
     event.preventDefault();
