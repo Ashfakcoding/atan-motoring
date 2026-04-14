@@ -3,12 +3,18 @@
 import { FormEvent, useEffect, useMemo, useState } from 'react';
 import { DEFAULTS, type Bike, type PricingRow, type Review, type Service } from '@/lib/defaults';
 import { hasSupabase, supabase } from '@/lib/supabase';
+import { BUSINESS_CONFIG, ENQUIRY_TYPES, BIKE_CLASSES, PAYMENT_PREFERENCES } from '@/lib/config';
+import { calculateAge, calculateRidingExperience, formatDateForInput, parseDate } from '@/lib/dateUtils';
+import { BIKE_MODELS, SERVICE_ESTIMATES, getEstimate, getEstimatesForBike, getBikeModelsByClass } from '@/data/serviceQuotes';
+import { COMMUNITY_POSTS, getPinnedPosts, getFeaturedPosts, getAllPosts } from '@/data/communityPosts';
+import { INVENTORY, getInventoryByCondition, getInventoryByClass, getFeaturedBikes } from '@/data/inventory';
 
-type PageKey = 'home' | 'bikes' | 'servicing' | 'reviews' | 'contact';
-type AdminTab = 'bikes' | 'services' | 'pricing';
+type PageKey = 'home' | 'bikes' | 'servicing' | 'reviews' | 'contact' | 'community';
+type AdminTab = 'bikes' | 'services' | 'pricing' | 'community-posts';
 type Filters = { condition: 'all' | 'new' | 'used'; class: 'all' | '2b' | '2a' | '2'; brand: string };
-type ContactPayload = { first_name: string; last_name: string; phone: string; enquiry_type: string; message: string };
+type ContactPayload = { first_name: string; last_name: string; phone: string; enquiry_type: string; message: string; dateOfBirth?: string; licenceIssueDate?: string; licenceClass?: string; paymentPreference?: string };
 type BikeEnquiryPayload = { name: string; phone: string; bike_name: string; message: string };
+type PostForm = { id: string; title: string; category: 'group-rides' | 'maintenance-tips' | 'workshop-news' | 'new-stock' | 'promotions'; excerpt: string; content: string; coverEmoji: string; pinned: boolean };
 
 type BikeForm = {
   id: number | '';
@@ -43,7 +49,7 @@ type PricingForm = {
 
 const LOCAL_USER = 'admin';
 const LOCAL_PASS = 'atan2024';
-const ENQUIRY_OPTIONS = ['General Servicing', 'Engine Overhaul', 'Buying a New Bike', 'Buying a Used Bike', 'Trade-In', 'Other'];
+const ENQUIRY_OPTIONS = ENQUIRY_TYPES;
 
 const emptyBikeForm: BikeForm = {
   id: '',
@@ -60,6 +66,7 @@ const emptyBikeForm: BikeForm = {
 
 const emptyServiceForm: ServiceForm = { id: '', icon: '', name: '', desc: '', price: '' };
 const emptyPricingForm: PricingForm = { id: '', type: 'item', catName: '', name: '', details: '', amount: '', popular: 'no' };
+const emptyPostForm: PostForm = { id: '', title: '', category: 'workshop-news', excerpt: '', content: '', coverEmoji: '📝', pinned: false };
 
 function BikeSvg({ condition }: { condition: 'new' | 'used' }) {
   const accent = condition === 'new' ? '#e84b1a' : '#fbbf24';
@@ -84,7 +91,6 @@ export default function Page() {
   const [services, setServices] = useState<Service[]>(DEFAULTS.services);
   const [pricing, setPricing] = useState<PricingRow[]>(DEFAULTS.pricing);
   const [reviews, setReviews] = useState<Review[]>(DEFAULTS.reviews);
-  const [isLoaded, setIsLoaded] = useState(false);
   const [isLoginOpen, setIsLoginOpen] = useState(false);
   const [isContactOpen, setIsContactOpen] = useState(false);
   const [isEnquiryOpen, setIsEnquiryOpen] = useState(false);
@@ -96,18 +102,38 @@ export default function Page() {
   const [loginPending, setLoginPending] = useState(false);
   const [contactPending, setContactPending] = useState(false);
   const [enquiryPending, setEnquiryPending] = useState(false);
-  const [contactForm, setContactForm] = useState<ContactPayload>({ first_name: '', last_name: '', phone: '', enquiry_type: ENQUIRY_OPTIONS[0], message: '' });
+  const [contactForm, setContactForm] = useState<ContactPayload>({ 
+    first_name: '', 
+    last_name: '', 
+    phone: '', 
+    enquiry_type: ENQUIRY_OPTIONS[0], 
+    message: '',
+    dateOfBirth: '',
+    licenceIssueDate: '',
+    licenceClass: '2b',
+    paymentPreference: PAYMENT_PREFERENCES[0]
+  });
   const [enquiryForm, setEnquiryForm] = useState<BikeEnquiryPayload>({ name: '', phone: '', bike_name: '', message: '' });
   const [bikeForm, setBikeForm] = useState<BikeForm>(emptyBikeForm);
   const [serviceForm, setServiceForm] = useState<ServiceForm>(emptyServiceForm);
   const [pricingForm, setPricingForm] = useState<PricingForm>(emptyPricingForm);
+  
+  // Quote modal state
+  const [isQuoteOpen, setIsQuoteOpen] = useState(false);
+  const [quoteSelectedClass, setQuoteSelectedClass] = useState<string>('');
+  const [quoteSelectedBike, setQuoteSelectedBike] = useState<number | ''>('');
+  const [quoteSelectedService, setQuoteSelectedService] = useState<string>('');
+  const [quoteResult, setQuoteResult] = useState<{ price: string; details: string } | null>(null);
+
+  // Community posts state
+  const [posts, setPosts] = useState(COMMUNITY_POSTS);
+  const [selectedPost, setSelectedPost] = useState<any>(null);
+  const [isPostDetailOpen, setIsPostDetailOpen] = useState(false);
+  const [postForm, setPostForm] = useState<PostForm>(emptyPostForm);
 
   useEffect(() => {
     const init = async () => {
-      if (!hasSupabase || !supabase) {
-        setIsLoaded(true);
-        return;
-      }
+      if (!hasSupabase || !supabase) return;
 
       const [bikesRes, servicesRes, pricingRes, reviewsRes, sessionRes] = await Promise.all([
         supabase.from('bikes').select('*').order('id', { ascending: true }),
@@ -122,7 +148,6 @@ export default function Page() {
       if (pricingRes.data?.length) setPricing(pricingRes.data as PricingRow[]);
       if (reviewsRes.data?.length) setReviews(reviewsRes.data as Review[]);
       setIsLoggedIn(Boolean(sessionRes.data.session));
-      setIsLoaded(true);
     };
 
     void init();
@@ -204,41 +229,46 @@ export default function Page() {
   }
 
   async function handleContactSubmit(event: FormEvent) {
-  event.preventDefault();
-  setContactPending(true);
+    event.preventDefault();
+    setContactPending(true);
 
-  if (hasSupabase && supabase) {
-    const { data, error } = await supabase.from('enquiries').insert({
-      type: 'contact',
-      first_name: contactForm.first_name,
-      last_name: contactForm.last_name,
-      phone: contactForm.phone,
-      enquiry_type: contactForm.enquiry_type,
-      message: contactForm.message
+    if (hasSupabase && supabase) {
+      const { data, error } = await supabase.from('enquiries').insert({
+        type: 'contact',
+        first_name: contactForm.first_name,
+        last_name: contactForm.last_name,
+        phone: contactForm.phone,
+        enquiry_type: contactForm.enquiry_type,
+        message: contactForm.message,
+        date_of_birth: contactForm.dateOfBirth,
+        licence_issue_date: contactForm.licenceIssueDate,
+        licence_class: contactForm.licenceClass,
+        payment_preference: contactForm.paymentPreference
+      });
+
+      if (error) {
+        alert("❌ Failed to send enquiry");
+        setContactPending(false);
+        return;
+      }
+    }
+
+    setContactPending(false);
+    setIsContactOpen(false);
+    setContactForm({
+      first_name: '',
+      last_name: '',
+      phone: '',
+      enquiry_type: ENQUIRY_OPTIONS[0],
+      message: '',
+      dateOfBirth: '',
+      licenceIssueDate: '',
+      licenceClass: '2b',
+      paymentPreference: PAYMENT_PREFERENCES[0]
     });
 
-    console.log('DATA:', data);
-    console.log('ERROR:', error);
-
-    if (error) {
-      alert("❌ Failed to send enquiry");
-      setContactPending(false);
-      return;
-    }
+    window.alert("✅ Message sent! Our team will be in touch within 24 hours.");
   }
-
-  setContactPending(false);
-  setIsContactOpen(false);
-  setContactForm({
-    first_name: '',
-    last_name: '',
-    phone: '',
-    enquiry_type: ENQUIRY_OPTIONS[0],
-    message: ''
-  });
-
-  window.alert("✅ Message sent! Our team will be in touch within 24 hours.");
-}
 
   async function handleBikeEnquiry(event: FormEvent) {
     event.preventDefault();
@@ -366,7 +396,88 @@ export default function Page() {
     await syncTable('pricing', next);
   }
 
-  if (!isLoaded) return null;
+  // Quote modal handlers
+  function openQuoteModal() {
+    setQuoteResult(null);
+    setQuoteSelectedClass('');
+    setQuoteSelectedBike('');
+    setQuoteSelectedService('');
+    setIsQuoteOpen(true);
+  }
+
+  function handleQuoteClassSelect(cls: string) {
+    setQuoteSelectedClass(cls);
+    setQuoteSelectedBike('');
+    setQuoteSelectedService('');
+  }
+
+  function handleQuoteBikeSelect(bikeId: number | null) {
+    if (bikeId === null) {
+      setQuoteSelectedBike('');
+    } else {
+      setQuoteSelectedBike(bikeId);
+    }
+    setQuoteSelectedService('');
+  }
+
+  function handleQuoteServiceSelect(service: string) {
+    setQuoteSelectedService(service);
+    if (typeof quoteSelectedBike === 'number') {
+      const estimate = getEstimate(quoteSelectedBike, service as any);
+      if (estimate) {
+        setQuoteResult({ 
+          price: `${estimate.priceFrom}${estimate.priceTo ? ` - ${estimate.priceTo}` : ''}`, 
+          details: estimate.packageDescription 
+        });
+      }
+    }
+  }
+
+  // Community posts handlers
+  function savePost() {
+    if (!postForm.title || !postForm.content) {
+      window.alert('Fill in title and content.');
+      return;
+    }
+
+    const newId = Math.max(0, ...posts.map(p => Number(p.id))) + 1;
+    const newPost = {
+      id: postForm.id ? Number(postForm.id) : newId,
+      title: postForm.title,
+      category: postForm.category,
+      excerpt: postForm.excerpt,
+      content: postForm.content,
+      author: 'Atan Admin',
+      publishedDate: new Date().toISOString(),
+      coverEmoji: postForm.coverEmoji,
+      pinned: postForm.pinned,
+      featured: false
+    };
+
+    const nextPosts = postForm.id 
+      ? posts.map(p => p.id === Number(postForm.id) ? newPost : p)
+      : [...posts, newPost];
+    
+    setPosts(nextPosts);
+    setPostForm(emptyPostForm);
+  }
+
+  function editPost(post: any) {
+    setPostForm({
+      id: String(post.id),
+      title: post.title,
+      category: post.category,
+      excerpt: post.excerpt,
+      content: post.content,
+      coverEmoji: post.coverEmoji || '📝',
+      pinned: post.pinned || false
+    });
+  }
+
+  function delPost(id: number) {
+    if (!window.confirm('Delete this post?')) return;
+    setPosts(posts.filter(p => p.id !== id));
+  }
 
   return (
     <>
@@ -385,6 +496,7 @@ export default function Page() {
           <button className={`page-tab ${activePage === 'home' ? 'active' : ''}`} onClick={() => goTo('home')}>Home</button>
           <button className={`page-tab ${activePage === 'bikes' ? 'active' : ''}`} onClick={() => goTo('bikes')}>Buy a Bike</button>
           <button className={`page-tab ${activePage === 'servicing' ? 'active' : ''}`} onClick={() => goTo('servicing')}>Servicing</button>
+          <button className={`page-tab ${activePage === 'community' ? 'active' : ''}`} onClick={() => goTo('community')}>Community</button>
           <button className={`page-tab ${activePage === 'reviews' ? 'active' : ''}`} onClick={() => goTo('reviews')}>Reviews</button>
           <button className={`page-tab ${activePage === 'contact' ? 'active' : ''}`} onClick={() => goTo('contact')}>Contact</button>
         </div>
@@ -481,6 +593,7 @@ export default function Page() {
                 <div className="service-name">{s.name}</div>
                 <p className="service-desc">{s.desc}</p>
                 <div className="service-price"><span className="from">From</span><span className="amount">S${s.price}</span></div>
+                <button className="get-quote-btn" onClick={openQuoteModal}>Get Quote →</button>
               </div>
             ))}
           </div>
@@ -505,6 +618,43 @@ export default function Page() {
               </table>
             </div>
             <p className="note">Prices are estimates and may vary. A no-obligation quote is provided before any work begins. GST not included.</p>
+          </div>
+        </div>
+        <Footer />
+      </div>
+
+      <div className={`page ${activePage === 'community' ? 'active' : ''}`} id="page-community">
+        <div className="pg-section">
+          <p className="section-eyebrow">Latest Updates</p>
+          <h2 className="section-title">COMMUNITY BOARD</h2>
+          <p className="section-sub">Group rides, maintenance tips, shop news, and new stock announcements from Atan Motoring.</p>
+          <div className="community-posts-grid">
+            {posts.length === 0 ? (
+              <div className="no-posts">No posts yet. Check back soon!</div>
+            ) : (
+              posts.map((post) => (
+                <div 
+                  className="post-card" 
+                  key={post.id}
+                  onClick={() => { setSelectedPost(post); setIsPostDetailOpen(true); }}
+                  role="button"
+                  tabIndex={0}
+                  onKeyDown={(e) => { if (e.key === 'Enter') { setSelectedPost(post); setIsPostDetailOpen(true); } }}
+                >
+                  <div className="post-header">
+                    <span className="post-emoji">{post.coverEmoji || '📝'}</span>
+                    {post.pinned && <span className="post-pinned-badge">📌 Pinned</span>}
+                  </div>
+                  <div className="post-category">{post.category?.replace(/-/g, ' ')}</div>
+                  <div className="post-title">{post.title}</div>
+                  <p className="post-excerpt">{post.excerpt || post.content?.substring(0, 100)}...</p>
+                  <div className="post-meta">
+                    <span className="post-author">{post.author}</span>
+                    <span className="post-date">{new Date(post.publishedDate).toLocaleDateString('en-SG')}</span>
+                  </div>
+                </div>
+              ))
+            )}
           </div>
         </div>
         <Footer />
@@ -587,6 +737,26 @@ export default function Page() {
               <div className="form-group"><label>Last Name</label><input type="text" required placeholder="Razali" value={contactForm.last_name} onChange={(e) => setContactForm((p) => ({ ...p, last_name: e.target.value }))} /></div>
             </div>
             <div className="form-group"><label>Phone / WhatsApp</label><input type="tel" placeholder="+65 9000 0000" value={contactForm.phone} onChange={(e) => setContactForm((p) => ({ ...p, phone: e.target.value }))} /></div>
+            <div className="form-group"><label>Date of Birth</label><input type="date" value={contactForm.dateOfBirth || ''} onChange={(e) => setContactForm((p) => ({ ...p, dateOfBirth: e.target.value }))} /></div>
+            <div className="calculated-field">
+              {contactForm.dateOfBirth && calculateAge(contactForm.dateOfBirth) ? (
+                <>Age: {calculateAge(contactForm.dateOfBirth)} years ✓</>
+              ) : (
+                <>Enter date of birth to calculate age</>
+              )}
+            </div>
+            <div className="form-group"><label>Licence Issue Date</label><input type="date" value={contactForm.licenceIssueDate || ''} onChange={(e) => setContactForm((p) => ({ ...p, licenceIssueDate: e.target.value }))} /></div>
+            <div className="calculated-field">
+              {contactForm.licenceIssueDate && calculateRidingExperience(contactForm.licenceIssueDate) ? (
+                <>Riding Experience: {calculateRidingExperience(contactForm.licenceIssueDate)?.toFixed(1)} years ✓</>
+              ) : (
+                <>Enter licence issue date to calculate riding experience</>
+              )}
+            </div>
+            <div className="form-row">
+              <div className="form-group"><label>Licence Class</label><select value={contactForm.licenceClass || '2b'} onChange={(e) => setContactForm((p) => ({ ...p, licenceClass: e.target.value }))}>{BIKE_CLASSES.map((cls) => <option key={cls.value} value={cls.value}>{cls.label}</option>)}</select></div>
+              <div className="form-group"><label>Payment Preference</label><select value={contactForm.paymentPreference || ''} onChange={(e) => setContactForm((p) => ({ ...p, paymentPreference: e.target.value }))}>{PAYMENT_PREFERENCES.map((pref) => <option key={pref} value={pref}>{pref}</option>)}</select></div>
+            </div>
             <div className="form-group"><label>Enquiry Type</label><select value={contactForm.enquiry_type} onChange={(e) => setContactForm((p) => ({ ...p, enquiry_type: e.target.value }))}>{ENQUIRY_OPTIONS.map((opt) => <option key={opt}>{opt}</option>)}</select></div>
             <div className="form-group"><label>Message</label><textarea placeholder="Tell us about your bike or what you're looking for…" value={contactForm.message} onChange={(e) => setContactForm((p) => ({ ...p, message: e.target.value }))} /></div>
             <button type="submit" className="form-submit" disabled={contactPending}>{contactPending ? 'Sending...' : 'Send Message'}</button>
@@ -609,6 +779,113 @@ export default function Page() {
         </div>
       </Modal>
 
+      <Modal open={isQuoteOpen} onClose={() => setIsQuoteOpen(false)} id="quote-modal">
+        <div className="modal" style={{ maxWidth: 560 }}>
+          <button className="modal-close" onClick={() => setIsQuoteOpen(false)}>✕</button>
+          <div className="modal-title">Get a Service Quote</div>
+          <p className="modal-sub">Select your bike class, model, and desired service to see an estimate.</p>
+          
+          {!quoteResult ? (
+            <div className="modal-form">
+              {!quoteSelectedClass ? (
+                <>
+                  <p style={{ marginBottom: 12, lineHeight: 1.5 }}>Step 1: What's your licence class?</p>
+                  <div className="quote-select-section">
+                    {BIKE_CLASSES.map((cls) => (
+                      <button 
+                        key={cls.value}
+                        className={`quote-select-btn ${quoteSelectedClass === cls.value ? 'active' : ''}`}
+                        onClick={() => handleQuoteClassSelect(cls.value)}
+                      >
+                        {cls.label}
+                      </button>
+                    ))}
+                  </div>
+                </>
+              ) : !quoteSelectedBike ? (
+                <>
+                  <p style={{ marginBottom: 12, lineHeight: 1.5 }}>Step 2: Select your bike model</p>
+                  <button 
+                    className="btn-ghost" 
+                    style={{ marginBottom: 12, fontSize: 12 }}
+                    onClick={() => handleQuoteClassSelect('')}
+                  >
+                    ← Back
+                  </button>
+                  <div className="quote-select-section">
+                    {getBikeModelsByClass(quoteSelectedClass as any).map((model) => (
+                      <button 
+                        key={model.id}
+                        className="quote-select-btn"
+                        onClick={() => handleQuoteBikeSelect(model.id)}
+                      >
+                        {model.brand} {model.model}
+                      </button>
+                    ))}
+                  </div>
+                </>
+              ) : !quoteSelectedService ? (
+                <>
+                  <p style={{ marginBottom: 12, lineHeight: 1.5 }}>Step 3: What service do you need?</p>
+                  <button 
+                    className="btn-ghost" 
+                    style={{ marginBottom: 12, fontSize: 12 }}
+                    onClick={() => handleQuoteBikeSelect(null)}
+                  >
+                    ← Back
+                  </button>
+                  <div className="quote-select-section">
+                    {getEstimatesForBike(quoteSelectedBike as number).map((est) => (
+                      <button 
+                        key={est.category}
+                        className="quote-select-btn"
+                        onClick={() => handleQuoteServiceSelect(est.category)}
+                      >
+                        {est.categoryLabel}
+                      </button>
+                    ))}
+                  </div>
+                </>
+              ) : null}
+            </div>
+          ) : (
+            <div className="quote-result">
+              <div className="quote-result-header">
+                <div className="quote-result-icon">✓</div>
+                <div>
+                  <div className="quote-result-label">Estimated Quote</div>
+                  <div className="quote-result-price">S${quoteResult.price}</div>
+                </div>
+              </div>
+              <div className="quote-result-details">{quoteResult.details}</div>
+              <p style={{ fontSize: 12, color: 'var(--muted)', marginTop: 12 }}>This is an estimate. Final price depends on bike condition and parts needed.</p>
+              <button className="btn-primary" style={{ marginTop: 16 }} onClick={() => { setIsQuoteOpen(false); setIsContactOpen(true); }}>Contact Us for Final Quote</button>
+              <button className="btn-ghost" onClick={() => setQuoteResult(null)}>Start Over</button>
+            </div>
+          )}
+        </div>
+      </Modal>
+
+      <Modal open={isPostDetailOpen} onClose={() => setIsPostDetailOpen(false)} id="post-detail-modal">
+        {selectedPost && (
+          <div className="modal" style={{ maxWidth: 560 }}>
+            <button className="modal-close" onClick={() => setIsPostDetailOpen(false)}>✕</button>
+            <div style={{ marginBottom: 20 }}>
+              <div style={{ fontSize: 32, marginBottom: 8 }}>{selectedPost.coverEmoji || '📝'}</div>
+              <div className="modal-title">{selectedPost.title}</div>
+              <div style={{ display: 'flex', gap: 12, marginTop: 8, fontSize: 12, color: 'var(--muted)' }}>
+                <span>{selectedPost.author}</span>
+                <span>•</span>
+                <span>{new Date(selectedPost.publishedDate).toLocaleDateString('en-SG')}</span>
+              </div>
+            </div>
+            <div style={{ fontSize: 14, lineHeight: 1.6, color: 'var(--muted)' }}>
+              {selectedPost.content}
+            </div>
+          </div>
+        )}
+      </Modal>
+
       <div className={`admin-panel ${isAdminOpen ? 'open' : ''}`} id="admin-panel">
         <div className="admin-header">
           <div><h2>Owner Dashboard</h2><div className="admin-header-sub">Atan Motoring Supply Pte Ltd</div></div>
@@ -621,6 +898,7 @@ export default function Page() {
           <button className={`admin-tab ${adminTab === 'bikes' ? 'active' : ''}`} onClick={() => setAdminTab('bikes')}>Bikes</button>
           <button className={`admin-tab ${adminTab === 'services' ? 'active' : ''}`} onClick={() => setAdminTab('services')}>Services</button>
           <button className={`admin-tab ${adminTab === 'pricing' ? 'active' : ''}`} onClick={() => setAdminTab('pricing')}>Pricing</button>
+          <button className={`admin-tab ${adminTab === 'community-posts' ? 'active' : ''}`} onClick={() => setAdminTab('community-posts')}>Community</button>
         </div>
         <div className="admin-content">
           <div className={`admin-section ${adminTab === 'bikes' ? 'active' : ''}`}>
@@ -674,6 +952,27 @@ export default function Page() {
               </>
             )}
             <div className="btn-row"><button className="admin-save" onClick={savePricing}>{pricingForm.id === '' ? 'Add Row' : 'Save Changes'}</button>{pricingForm.id !== '' ? <button className="admin-save btn-cancel show" onClick={() => setPricingForm(emptyPricingForm)}>Cancel</button> : null}</div>
+          </div>
+
+          <div className={`admin-section ${adminTab === 'community-posts' ? 'active' : ''}`}>
+            <p className="admin-note">Create and manage community bulletin board posts.</p>
+            <div>
+              {posts.map((p) => <AdminListItem key={p.id} title={<>{p.coverEmoji || '📝'} {p.title}</>} subtitle={`${p.category?.replace(/-/g, ' ')} · ${p.pinned ? '📌 Pinned' : 'Draft'}`} onEdit={() => editPost(p)} onDelete={() => delPost(p.id)} />)}
+            </div>
+            <hr className="admin-divider" />
+            <p className="admin-sub-title">{postForm.id === '' ? 'Create New Post' : 'Edit Post'}</p>
+            <AdminInput label="Emoji" value={postForm.coverEmoji} onChange={(v) => setPostForm((p) => ({ ...p, coverEmoji: v }))} placeholder="e.g. 🏍️" />
+            <AdminInput label="Title" value={postForm.title} onChange={(v) => setPostForm((p) => ({ ...p, title: v }))} placeholder="e.g. Group Ride This Saturday" />
+            <AdminSelect label="Category" value={postForm.category} onChange={(v) => setPostForm((p) => ({ ...p, category: v as any }))} options={[['group-rides', 'Group Rides'], ['maintenance-tips', 'Maintenance Tips'], ['workshop-news', 'Workshop News'], ['new-stock', 'New Stock'], ['promotions', 'Promotions']]} />
+            <AdminInput label="Excerpt" value={postForm.excerpt} onChange={(v) => setPostForm((p) => ({ ...p, excerpt: v }))} placeholder="Brief summary for the preview" />
+            <AdminTextarea label="Full Content" value={postForm.content} onChange={(v) => setPostForm((p) => ({ ...p, content: v }))} placeholder="Write the full post content..." />
+            <div className="admin-form-group">
+              <label>
+                <input type="checkbox" checked={postForm.pinned} onChange={(e) => setPostForm((p) => ({ ...p, pinned: e.target.checked }))} />
+                {' '}Pin this post to top
+              </label>
+            </div>
+            <div className="btn-row"><button className="admin-save" onClick={savePost}>{postForm.id === '' ? 'Create Post' : 'Save Changes'}</button>{postForm.id !== '' ? <button className="admin-save btn-cancel show" onClick={() => setPostForm(emptyPostForm)}>Cancel</button> : null}</div>
           </div>
         </div>
       </div>

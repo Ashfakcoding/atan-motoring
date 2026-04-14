@@ -8,7 +8,8 @@ create table if not exists bikes (
   engine text not null,
   power text not null,
   spec3 text not null,
-  status text not null
+  status text not null,
+  carousell_url text
 );
 
 create table if not exists services (
@@ -38,6 +39,53 @@ create table if not exists reviews (
   rating integer not null default 5
 );
 
+create table if not exists service_rates (
+  id bigint generated always as identity primary key,
+  bike_model_id integer not null,
+  bike_brand text not null,
+  bike_model text not null,
+  service_category text not null,
+  service_label text not null,
+  description text,
+  price_from decimal(10,2) not null,
+  price_to decimal(10,2),
+  notes text,
+  created_at timestamptz default now(),
+  updated_at timestamptz default now()
+);
+
+create table if not exists community_posts (
+  id bigint generated always as identity primary key,
+  title text not null,
+  category text not null check (category in ('group-rides','maintenance-tips','workshop-news','new-stock','promotions')),
+  excerpt text,
+  content text not null,
+  author text not null default 'Atan Admin',
+  cover_emoji text default '📝',
+  pinned boolean default false,
+  featured boolean default false,
+  published_date timestamptz not null default now(),
+  created_at timestamptz default now(),
+  updated_at timestamptz default now()
+);
+
+create table if not exists bike_inventory (
+  id bigint generated always as identity primary key,
+  make text not null,
+  model text not null,
+  condition text not null check (condition in ('new','used')),
+  licence_class text not null check (licence_class in ('2b','2a','2')),
+  price decimal(10,2) not null,
+  engine_cc integer,
+  power_hp text,
+  year_or_mileage text,
+  carousell_url text,
+  featured boolean default false,
+  in_stock boolean default true,
+  created_at timestamptz default now(),
+  updated_at timestamptz default now()
+);
+
 create table if not exists enquiries (
   id bigint generated always as identity primary key,
   type text not null,
@@ -48,6 +96,10 @@ create table if not exists enquiries (
   enquiry_type text,
   bike_name text,
   message text,
+  date_of_birth date,
+  licence_issue_date date,
+  licence_class text check (licence_class in ('2b','2a','2')),
+  payment_preference text,
   created_at timestamptz not null default now()
 );
 
@@ -56,17 +108,36 @@ alter table services enable row level security;
 alter table pricing enable row level security;
 alter table reviews enable row level security;
 alter table enquiries enable row level security;
+alter table service_rates enable row level security;
+alter table community_posts enable row level security;
+alter table bike_inventory enable row level security;
 
 create policy "public read bikes" on bikes for select using (true);
 create policy "public read services" on services for select using (true);
 create policy "public read pricing" on pricing for select using (true);
 create policy "public read reviews" on reviews for select using (true);
 create policy "public insert enquiries" on enquiries for insert with check (true);
+create policy "public read service_rates" on service_rates for select using (true);
+create policy "public read community_posts" on community_posts for select using (true);
+create policy "public read bike_inventory" on bike_inventory for select using (true);
 
 create policy "authenticated manage bikes" on bikes for all using (auth.role() = 'authenticated') with check (auth.role() = 'authenticated');
 create policy "authenticated manage services" on services for all using (auth.role() = 'authenticated') with check (auth.role() = 'authenticated');
 create policy "authenticated manage pricing" on pricing for all using (auth.role() = 'authenticated') with check (auth.role() = 'authenticated');
 create policy "authenticated manage reviews" on reviews for all using (auth.role() = 'authenticated') with check (auth.role() = 'authenticated');
+create policy "authenticated manage service_rates" on service_rates for all using (auth.role() = 'authenticated') with check (auth.role() = 'authenticated');
+create policy "authenticated manage community_posts" on community_posts for all using (auth.role() = 'authenticated') with check (auth.role() = 'authenticated');
+create policy "authenticated manage bike_inventory" on bike_inventory for all using (auth.role() = 'authenticated') with check (auth.role() = 'authenticated');
+
+-- Indexes for performance
+create index if not exists idx_service_rates_bike_model on service_rates(bike_model_id);
+create index if not exists idx_service_rates_category on service_rates(service_category);
+create index if not exists idx_community_posts_category on community_posts(category);
+create index if not exists idx_community_posts_pinned on community_posts(pinned);
+create index if not exists idx_bike_inventory_licence_class on bike_inventory(licence_class);
+create index if not exists idx_bike_inventory_condition on bike_inventory(condition);
+create index if not exists idx_enquiries_type on enquiries(type);
+create index if not exists idx_enquiries_created_at on enquiries(created_at);
 
 insert into bikes (id, make, model, cond, cls, price, engine, power, spec3, status) values
 (1,'Honda','RS150R 2024','new','2b','9,800','150cc','17.1 hp','2024','In Stock'),
@@ -125,3 +196,33 @@ insert into reviews (id, author, avatar, source, text, rating) values
 (5,'Guatseah','G','Verified buyer · Carousell Review','Highly recommend getting your bike here. Kenneth is knowledgeable on bikes and is a really easygoing person. Completed the deal in just 1 viewing! Very friendly and top-notch service all around. Strongly recommended.',5),
 (6,'Raymond T.','R','Long-time customer · Google Review','Mr. Steven and his sons Kenneth and Kendrick are true professionals. Smooth process for buying and servicing. Detailed advice on bikes and recommendations. Over 30 years of experience really shows.',5)
 on conflict (id) do nothing;
+
+-- Sample Service Rates for different bike models
+insert into service_rates (bike_model_id, bike_brand, bike_model, service_category, service_label, description, price_from, price_to, notes) values
+(1, 'Honda', 'RS150R', 'general', 'General Servicing', 'Oil change + filter + inspection', 45.00, 60.00, 'Every 1000km'),
+(1, 'Honda', 'RS150R', 'overhaul', 'Major Servicing', 'Full service with valve clearance', 120.00, 150.00, 'Every 5000km'),
+(1, 'Honda', 'RS150R', 'brake-suspension', 'Brake Pad Replacement', 'Front and rear pad set', 65.00, 100.00, 'As needed'),
+(1, 'Honda', 'RS150R', 'cvt', 'CVT Belt Service', 'Belt + pulley inspection', 80.00, 120.00, 'Every 10000km'),
+(1, 'Honda', 'RS150R', 'diagnostic', 'Electrical Diagnosis', 'Full system scan', 50.00, 80.00, 'For engine warning light'),
+(4, 'Honda', 'CB500F', 'general', 'General Servicing', 'Oil change + filter + inspection', 55.00, 75.00, 'Every 1000km'),
+(4, 'Honda', 'CB500F', 'overhaul', 'Major Servicing', 'Full service with valve clearance', 150.00, 200.00, 'Every 6000km'),
+(6, 'Kawasaki', 'Z650', 'general', 'General Servicing', 'Oil change + filter + inspection', 60.00, 85.00, 'Every 1000km'),
+(6, 'Kawasaki', 'Z650', 'overhaul', 'Major Servicing', 'Full service with valve clearance', 180.00, 250.00, 'Every 6000km')
+on conflict do nothing;
+
+-- Sample Community Posts
+insert into community_posts (title, category, excerpt, content, author, cover_emoji, pinned, featured, published_date) values
+('Weekend Group Ride to East Coast Lagoon – June 15th', 'group-rides', 'Join us for a scenic ride along the coast!', 'Meet at Atan Motoring at 8 AM. We''ll be riding to East Coast Lagoon with a stop for breakfast. Perfect for all skill levels. Bring your helmet and a full tank!', 'Atan Admin', '🏍️', true, true, now() - interval '2 days'),
+('Chain Maintenance Tips for Wet Season', 'maintenance-tips', 'Keep your bike chain in perfect condition', 'The wet season is here! Time to give your chain extra care. Use a quality chain cleaner and lube regularly. Check chain tension every 500km. A well-maintained chain ensures smooth riding and extends your bike life.', 'Atan Admin', '⛓️', true, false, now() - interval '5 days'),
+('New Stock Arrival: Yamaha XMAX 300 2024', 'new-stock', 'Fresh arrivals in our showroom!', 'We just received 3 units of the 2024 Yamaha XMAX 300. Premium automatic scooter with ABS and traction control. Financing available. Come visit us at the workshop to test ride!', 'Atan Admin', '✨', false, true, now() - interval '1 day'),
+('May Promo: Free Helmet with Every Service', 'promotions', 'Special offer this month only!', 'Avail of a free quality helmet (worth S$80) when you book a Major Service this month. Valid until May 31st. Limited slots available, so book your appointment now!', 'Atan Admin', '🎁', false, false, now() - interval '7 days')
+on conflict do nothing;
+
+-- Sample Bike Inventory with Carousell URLs
+insert into bike_inventory (make, model, condition, licence_class, price, engine_cc, power_hp, year_or_mileage, carousell_url, featured, in_stock) values
+('Honda', 'RS150R 2024', 'new', '2b', 9800, 150, '17.1hp', '2024', 'https://www.carousell.sg/p/honda-rs150r-2024-atan-motoring/', true, true),
+('Yamaha', 'Aerox 155 2024', 'new', '2a', 12500, 155, '16.2hp', '2024', 'https://www.carousell.sg/p/yamaha-aerox-155-2024-atan-motoring/', true, true),
+('Kawasaki', 'Z650 2024', 'new', '2', 28800, 649, '68hp', '2024', 'https://www.carousell.sg/p/kawasaki-z650-2024-atan-motoring/', true, true),
+('Honda', 'CBR150R 2021', 'used', '2b', 6500, 150, '18hp', '22k km', 'https://www.carousell.sg/p/honda-cbr150r-2021-good-condition-atan-motoring/', false, true),
+('Yamaha', 'FZ150i 2020', 'used', '2b', 4800, 150, '14.5hp', '35k km', 'https://www.carousell.sg/p/yamaha-fz150i-2020-atan-motoring/', false, true)
+on conflict do nothing;
