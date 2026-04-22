@@ -226,3 +226,31 @@ insert into bike_inventory (make, model, condition, licence_class, price, engine
 ('Honda', 'CBR150R 2021', 'used', '2b', 6500, 150, '18hp', '22k km', 'https://www.carousell.sg/p/honda-cbr150r-2021-good-condition-atan-motoring/', false, true),
 ('Yamaha', 'FZ150i 2020', 'used', '2b', 4800, 150, '14.5hp', '35k km', 'https://www.carousell.sg/p/yamaha-fz150i-2020-atan-motoring/', false, true)
 on conflict do nothing;
+
+-- Listings table for Carousell importer
+create table if not exists listings (
+  id uuid primary key default gen_random_uuid(),
+  created_at timestamptz default now(),
+  title text not null,
+  description text,
+  price numeric,
+  engine_cc integer,
+  coe_expiry date,
+  mileage integer,
+  licence_class text check (licence_class in ('2B', '2A', 'Class 2')),
+  seller_type text check (seller_type in ('Dealer', 'Owner')),
+  location text,
+  image_url text,
+  carousell_source_url text,
+  status text default 'draft' check (status in ('draft', 'published')),
+  updated_at timestamptz default now()
+);
+
+alter table listings enable row level security;
+
+create policy "public read published listings" on listings for select using (status = 'published');
+create policy "authenticated manage listings" on listings for all using (auth.role() = 'authenticated') with check (auth.role() = 'authenticated');
+
+create index if not exists idx_listings_status on listings(status);
+create index if not exists idx_listings_created_at on listings(created_at);
+create index if not exists idx_listings_licence_class on listings(licence_class);
